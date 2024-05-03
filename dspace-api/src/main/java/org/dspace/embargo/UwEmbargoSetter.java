@@ -49,25 +49,27 @@ public class UwEmbargoSetter extends DayTableEmbargoSetter
                                     String reason, DSpaceObject dso, Collection owningCollection) throws SQLException, AuthorizeException {
 
         // add only embargo policy
-        if(embargoDate!=null) {
+        if (embargoDate!=null) {
 
             Group[] authorizedGroups = AuthorizeManager.getAuthorizedGroups(context, owningCollection, Constants.DEFAULT_ITEM_READ);
 
             // This should always be true, as UW doesn't apply embargos to collections that are not public-access.  Left here anyways just in case
             // look for anonymous
             boolean isAnonymousInPlace=false;
-            for(Group g : authorizedGroups){
-                if(g.getID()==Group.ANONYMOUS_ID){
+            for (Group g : authorizedGroups) {
+                if (g.getID()==Group.ANONYMOUS_ID ) {
                     isAnonymousInPlace=true;
                     break;
                 }
             }
 
             // Embargo anonymous group
-            if(isAnonymousInPlace){
+            if (isAnonymousInPlace) {
                 // Anonymous group is always group id "0"
                 ResourcePolicy rp = AuthorizeManager.createOrModifyPolicy(null, context, null, 0, null, embargoDate, Constants.READ, reason, dso);
-                if (rp!=null) rp.update();
+                if (rp!=null){
+                    rp.update();
+                }
             }
 
             // If embargo also applies to UW_Users, apply embargo there, too
@@ -77,7 +79,7 @@ public class UwEmbargoSetter extends DayTableEmbargoSetter
                 boolean isUWUsersInPlace=false;
                 Group uwUsers = Group.findByName(context, "UW_Users");
                 int idUWUsers = uwUsers.getID();
-                for(Group g : authorizedGroups){
+                for(Group g : authorizedGroups) {
                     if(g.getID()==idUWUsers) {
                         isUWUsersInPlace=true;
                         break;
@@ -85,12 +87,19 @@ public class UwEmbargoSetter extends DayTableEmbargoSetter
                 }
 
                 // Embargo UW_Users
-                if(isUWUsersInPlace){
+                if(isUWUsersInPlace) {
                     log.info("Applying embargo to UW_Users"); 
                     ResourcePolicy rp = AuthorizeManager.createOrModifyPolicy(null, context, null, idUWUsers, null, embargoDate, Constants.READ, reason, dso);
-                    if (rp!=null) rp.update();
-                } else log.info("No UW_Users group found, skipping embargo here");
-            } else log.info("Embargo permits UW access, skipping embargo application to UW_Users");
+                    if (rp!=null) {
+                        rp.update();
+                    }
+                } else {
+                    log.info("No UW_Users group found, skipping embargo here");
+                }
+            } 
+            else {
+                log.info("Embargo permits UW access, skipping embargo application to UW_Users");
+            }
         }
     }
 }
