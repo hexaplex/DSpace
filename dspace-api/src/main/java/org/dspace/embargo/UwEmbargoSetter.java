@@ -6,8 +6,8 @@ import java.util.List;
 import java.util.UUID;
 
 import org.apache.commons.lang3.StringUtils;
-import org.apache.log4j.Logger;
-import org.dspace.core.LogManager;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 import org.dspace.authorize.AuthorizeException;
 import org.dspace.authorize.ResourcePolicy;
@@ -29,7 +29,7 @@ import org.dspace.eperson.factory.EPersonServiceFactory;
 public class UwEmbargoSetter extends DayTableEmbargoSetter
 {
     /** log4j logger */
-    private static Logger log = Logger.getLogger(UwEmbargoSetter.class);
+    private static Logger log = LogManager.getLogger(UwEmbargoSetter.class);
     private String lastTerms = null;
 
     /**
