@@ -1,10 +1,8 @@
 package org.dspace.embargo;
 
 import java.sql.SQLException;
-import java.io.IOException;
 import java.util.Date;
 import java.util.List;
-import java.util.Properties;
 import java.util.UUID;
 
 import org.apache.commons.lang3.StringUtils;
@@ -12,14 +10,12 @@ import org.apache.log4j.Logger;
 import org.dspace.core.LogManager;
 
 import org.dspace.authorize.AuthorizeException;
-import org.dspace.authorize.AuthorizeManager;
 import org.dspace.authorize.ResourcePolicy;
 import org.dspace.authorize.factory.AuthorizeServiceFactory;
 import org.dspace.authorize.service.AuthorizeService;
 import org.dspace.authorize.service.ResourcePolicyService;
 import org.dspace.content.DCDate;
 import org.dspace.content.Item;
-import org.dspace.core.ConfigurationManager;
 import org.dspace.core.Context;
 import org.dspace.core.Constants;
 import org.dspace.content.DSpaceObject;
