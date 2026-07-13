@@ -12,39 +12,34 @@ import java.util.UUID;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-
 import org.dspace.authorize.AuthorizeException;
 import org.dspace.authorize.ResourcePolicy;
 import org.dspace.authorize.factory.AuthorizeServiceFactory;
 import org.dspace.authorize.service.AuthorizeService;
 import org.dspace.authorize.service.ResourcePolicyService;
-import org.dspace.content.DCDate;
-import org.dspace.content.Item;
-import org.dspace.core.Context;
-import org.dspace.core.Constants;
-import org.dspace.content.DSpaceObject;
+import org.dspace.content.Bitstream;
+import org.dspace.content.Bundle;
 import org.dspace.content.Collection;
+import org.dspace.content.DCDate;
+import org.dspace.content.DSpaceObject;
+import org.dspace.content.Item;
+import org.dspace.content.factory.ContentServiceFactory;
+import org.dspace.core.Constants;
+import org.dspace.core.Context;
+import org.dspace.embargo.factory.EmbargoServiceFactory;
 import org.dspace.eperson.Group;
 import org.dspace.eperson.factory.EPersonServiceFactory;
+import org.dspace.license.CreativeCommonsServiceImpl;
 import org.dspace.services.factory.DSpaceServicesFactory;
 
 
 // Extends DayTableEmbargoSetter to handle whether to apply embargo to UW_Users group permission
 
-public class UwEmbargoSetter extends DayTableEmbargoSetter
-{
+public class UwEmbargoSetter extends DayTableEmbargoSetter {
     /** log4j logger */
     private static Logger log = LogManager.getLogger(UwEmbargoSetter.class);
-    // Carries the terms from parseTerms() to generatePolicies(). Per-thread rather than a
-    // plain field: this is a shared "single" plugin instance and embargoes are set on
-    // concurrent submission threads, so a plain field could let one item's generatePolicies
-    // read another item's terms. parseTerms() always runs before generatePolicies() on the
-    // same thread, so each thread reads back exactly the value it wrote.
-    private final ThreadLocal<String> lastTerms = new ThreadLocal<>();
 
     /**
-     * Override parseTerms solely to set lastTerms for use by generatePolicies()
-     *
      * NOTE: The day-table lookup below is intentionally copied from
      * DayTableEmbargoSetter rather than delegated to super.parseTerms(). This
      * works around an upstream bug in DayTableEmbargoSetter.parseTerms(), which
@@ -57,8 +52,6 @@ public class UwEmbargoSetter extends DayTableEmbargoSetter
     @Override
     public DCDate parseTerms(Context context, Item item, String terms)
         throws SQLException, AuthorizeException {
-
-        lastTerms.set(terms);
 
         String termsOpen = DSpaceServicesFactory.getInstance().getConfigurationService()
                                                 .getProperty("embargo.terms.open");
@@ -99,13 +92,79 @@ public class UwEmbargoSetter extends DayTableEmbargoSetter
         return termProps;
     }
 
+    /**
+     * Overridden (bundle/bitstream loop copied from DefaultEmbargoSetter) so the
+     * embargo terms can be read from the item's metadata here and passed to
+     * generatePolicies() as an explicit parameter, keeping the setter stateless.
+     */
+    @Override
+    public void setEmbargo(Context context, Item item)
+        throws SQLException, AuthorizeException {
+
+        String terms = getTermsFromItem(item);
+        DCDate liftDate = EmbargoServiceFactory.getInstance().getEmbargoService()
+                                               .getEmbargoTermsAsDate(context, item);
+        // Unlike the parent, guard against a null lift date (e.g. terms metadata
+        // absent on an AIP-restore path) instead of throwing an NPE.
+        if (liftDate == null) {
+            log.warn("No embargo lift date could be determined for Item "
+                         + item.getHandle() + ", no policies generated");
+            return;
+        }
+        for (Bundle bn : item.getBundles()) {
+            // Skip the LICENSE and METADATA bundles, they stay world-readable
+            String bnn = bn.getName();
+            if (!(bnn.equals(Constants.LICENSE_BUNDLE_NAME) || bnn.equals(Constants.METADATA_BUNDLE_NAME)
+                || bnn.equals(CreativeCommonsServiceImpl.CC_BUNDLE_NAME))) {
+                for (Bitstream bs : bn.getBitstreams()) {
+                    generatePolicies(context, liftDate.toDate().toLocalDate(), null, bs,
+                                     item.getOwningCollection(), terms);
+                }
+            }
+        }
+    }
 
     /**
-     * Custom embargo application to accomodate UW_Users permission and whether to apply embargo there
+     * Read the user-supplied embargo terms from the item's metadata, using the
+     * same field the embargo subsystem is configured with (embargo.field.terms).
+     *
+     * @param item the item under embargo
+     * @return the terms string, or null if unset
+     */
+    private String getTermsFromItem(Item item) {
+        String termsField = DSpaceServicesFactory.getInstance().getConfigurationService()
+                                                 .getProperty("embargo.field.terms");
+        if (termsField == null) {
+            log.warn("embargo.field.terms is not configured, treating embargo terms as absent");
+            return null;
+        }
+        String[] parts = termsField.split("\\.", 3);
+        return ContentServiceFactory.getInstance().getItemService()
+            .getMetadataFirstValue(item, parts[0],
+                                   parts.length > 1 ? parts[1] : null,
+                                   parts.length > 2 ? parts[2] : null,
+                                   Item.ANY);
+    }
+
+    /**
+     * Retained for callers of the parent signature (our setEmbargo() override is
+     * the only caller on the normal path). Without the terms there is no way to
+     * tell a "Restrict to UW" embargo from a "Delay release" one, so this fails
+     * safe: no UW_Users policy is created.
      */
     @Override
     protected void generatePolicies(Context context, LocalDate embargoDate,
                                     String reason, DSpaceObject dso, Collection owningCollection)
+        throws SQLException, AuthorizeException {
+        generatePolicies(context, embargoDate, reason, dso, owningCollection, null);
+    }
+
+    /**
+     * Custom embargo application to accomodate UW_Users permission and whether to apply embargo there
+     */
+    protected void generatePolicies(Context context, LocalDate embargoDate,
+                                    String reason, DSpaceObject dso, Collection owningCollection,
+                                    String terms)
         throws SQLException, AuthorizeException {
 
         if (embargoDate == null) {
@@ -134,20 +193,19 @@ public class UwEmbargoSetter extends DayTableEmbargoSetter
                                                             .findByName(context, Group.ANONYMOUS),
                                         null, embargoDate, Constants.READ, reason, dso);
             if (rp != null) {
-                log.info("Adding embargoed READ policy for Anonymous group"); 
+                log.info("Adding embargoed READ policy for Anonymous group");
                 getResourcePolicyService().update(context, rp);
             }
-        } 
+        }
 
         // If embargo is a "UW Restricted" type...
-        String terms = lastTerms.get();
         if (terms != null && terms.contains("Restrict to UW")) {
             // Check if UW_Users group is authorized
             boolean uwUsersGroupIsAuthorized = false;
             Group uwUsers = EPersonServiceFactory.getInstance().getGroupService().findByName(context, "UW_Users");
             UUID idUWUsers = uwUsers.getID();
-            for(Group g : authorizedGroups) {
-                if(g.getID().equals(idUWUsers)) {
+            for (Group g : authorizedGroups) {
+                if (g.getID().equals(idUWUsers)) {
                     uwUsersGroupIsAuthorized = true;
                     break;
                 }
@@ -156,17 +214,16 @@ public class UwEmbargoSetter extends DayTableEmbargoSetter
             // If the UW_Users group is authorized, add an non-embargoed READ policy for it
             if (uwUsersGroupIsAuthorized) {
                 ResourcePolicy rp = getAuthorizeService()
-                    .createOrModifyPolicy(null, context, null, uwUsers, 
+                    .createOrModifyPolicy(null, context, null, uwUsers,
                                             null, null, Constants.READ, reason, dso);
                 if (rp != null) {
-                    log.info("Adding non-embargoed READ policy for UW_Users group"); 
+                    log.info("Adding non-embargoed READ policy for UW_Users group");
                     getResourcePolicyService().update(context, rp);
                 }
             } else {
                 log.info("UW_Users group not authorized, no policy created for it");
             }
-        } 
-        else {
+        } else {
             log.info("Embargo is 'Delay release' type, no UW_Users policy created");
         }
     }

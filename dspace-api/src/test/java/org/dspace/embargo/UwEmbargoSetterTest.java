@@ -26,6 +26,7 @@ import static org.mockito.Mockito.when;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.Arrays;
 import java.util.List;
@@ -36,10 +37,17 @@ import org.dspace.authorize.AuthorizeException;
 import org.dspace.authorize.ResourcePolicy;
 import org.dspace.authorize.service.AuthorizeService;
 import org.dspace.authorize.service.ResourcePolicyService;
+import org.dspace.content.Bitstream;
+import org.dspace.content.Bundle;
 import org.dspace.content.Collection;
 import org.dspace.content.DCDate;
 import org.dspace.content.DSpaceObject;
+import org.dspace.content.Item;
+import org.dspace.content.factory.ContentServiceFactory;
+import org.dspace.content.service.ItemService;
 import org.dspace.core.Constants;
+import org.dspace.embargo.factory.EmbargoServiceFactory;
+import org.dspace.embargo.service.EmbargoService;
 import org.dspace.eperson.Group;
 import org.dspace.eperson.factory.EPersonServiceFactory;
 import org.dspace.eperson.service.GroupService;
@@ -57,15 +65,24 @@ import org.mockito.MockedStatic;
  * and 'embargo.terms.days'), so they run against the test kernel without a
  * database, mirroring {@link DayTableEmbargoSetterTest}.
  *
- * The generatePolicies() tests inject mock services into the protected
+ * The generatePolicies() tests pass the embargo terms explicitly to the
+ * terms-aware overload, inject mock services into the protected
  * authorizeService/resourcePolicyService fields inherited from
  * DefaultEmbargoSetter, and statically mock EPersonServiceFactory for group
  * lookups, so no database is needed there either.
+ *
+ * The setEmbargo() tests additionally mock the Item (with its bundles and
+ * bitstreams) and statically mock EmbargoServiceFactory (lift date lookup)
+ * and ContentServiceFactory (terms metadata lookup) to prove the terms flow
+ * from the item's metadata through to the generated policies.
  */
 public class UwEmbargoSetterTest extends AbstractDSpaceTest {
 
     private static final String TERMS_OPEN_PROPERTY = "embargo.terms.open";
     private static final String TERMS_DAYS_PROPERTY = "embargo.terms.days";
+    private static final String TERMS_FIELD_PROPERTY = "embargo.field.terms";
+
+    private static final String TERMS_FIELD = "dc.description.embargo";
 
     private static final String UW_USERS_GROUP = "UW_Users";
 
@@ -86,6 +103,7 @@ public class UwEmbargoSetterTest extends AbstractDSpaceTest {
 
     private Object previousTermsOpen;
     private Object previousTermsDays;
+    private Object previousTermsField;
 
     // Mocked collaborators for the generatePolicies() tests
     private AuthorizeService authorizeService;
@@ -96,11 +114,18 @@ public class UwEmbargoSetterTest extends AbstractDSpaceTest {
     private DSpaceObject dso;
     private Collection owningCollection;
 
+    // Mocked item structure for the setEmbargo() tests
+    private Item item;
+    private Bundle licenseBundle;
+    private Bundle originalBundle;
+    private Bitstream originalBitstream;
+
     @Before
     public void setUp() throws SQLException {
         configurationService = DSpaceServicesFactory.getInstance().getConfigurationService();
         previousTermsOpen = configurationService.getPropertyValue(TERMS_OPEN_PROPERTY);
         previousTermsDays = configurationService.getPropertyValue(TERMS_DAYS_PROPERTY);
+        previousTermsField = configurationService.getPropertyValue(TERMS_FIELD_PROPERTY);
 
         configurationService.setProperty(TERMS_OPEN_PROPERTY, "forever");
         configurationService.setProperty(TERMS_DAYS_PROPERTY, new String[] {
@@ -109,6 +134,7 @@ public class UwEmbargoSetterTest extends AbstractDSpaceTest {
             RESTRICT_5_YEARS + ":1800",
             DELAY_1_YEAR + ":365",
             DELAY_2_YEARS + ":720"});
+        configurationService.setProperty(TERMS_FIELD_PROPERTY, TERMS_FIELD);
 
         embargoSetter = new UwEmbargoSetter();
 
@@ -137,6 +163,7 @@ public class UwEmbargoSetterTest extends AbstractDSpaceTest {
     public void tearDown() {
         configurationService.setProperty(TERMS_OPEN_PROPERTY, previousTermsOpen);
         configurationService.setProperty(TERMS_DAYS_PROPERTY, previousTermsDays);
+        configurationService.setProperty(TERMS_FIELD_PROPERTY, previousTermsField);
     }
 
     // ---------------------------------------------------------------
@@ -189,7 +216,7 @@ public class UwEmbargoSetterTest extends AbstractDSpaceTest {
 
     @Test
     public void generatePoliciesDoesNothingForNullEmbargoDate() throws SQLException, AuthorizeException {
-        embargoSetter.generatePolicies(null, null, "reason", dso, owningCollection);
+        embargoSetter.generatePolicies(null, null, "reason", dso, owningCollection, RESTRICT_1_YEAR);
 
         verifyNoInteractions(authorizeService);
         verifyNoInteractions(resourcePolicyService);
@@ -202,12 +229,11 @@ public class UwEmbargoSetterTest extends AbstractDSpaceTest {
         stubAuthorizedGroups(anonymousGroup, uwUsersGroup);
         ResourcePolicy anonymousPolicy = mock(ResourcePolicy.class);
         ResourcePolicy uwPolicy = mock(ResourcePolicy.class);
-        stubCreatePolicy(anonymousGroup, embargoDate, anonymousPolicy);
-        stubCreatePolicy(uwUsersGroup, null, uwPolicy);
+        stubCreatePolicy(anonymousGroup, embargoDate, anonymousPolicy, dso);
+        stubCreatePolicy(uwUsersGroup, null, uwPolicy, dso);
 
         try (MockedStatic<EPersonServiceFactory> factory = mockGroupService()) {
-            embargoSetter.parseTerms(null, null, RESTRICT_1_YEAR);
-            embargoSetter.generatePolicies(null, embargoDate, "reason", dso, owningCollection);
+            embargoSetter.generatePolicies(null, embargoDate, "reason", dso, owningCollection, RESTRICT_1_YEAR);
         }
 
         verify(authorizeService).createOrModifyPolicy(isNull(), any(), isNull(), same(anonymousGroup),
@@ -226,11 +252,10 @@ public class UwEmbargoSetterTest extends AbstractDSpaceTest {
         LocalDate embargoDate = LocalDate.now().plusDays(720);
         stubAuthorizedGroups(anonymousGroup);
         ResourcePolicy anonymousPolicy = mock(ResourcePolicy.class);
-        stubCreatePolicy(anonymousGroup, embargoDate, anonymousPolicy);
+        stubCreatePolicy(anonymousGroup, embargoDate, anonymousPolicy, dso);
 
         try (MockedStatic<EPersonServiceFactory> factory = mockGroupService()) {
-            embargoSetter.parseTerms(null, null, RESTRICT_2_YEARS);
-            embargoSetter.generatePolicies(null, embargoDate, "reason", dso, owningCollection);
+            embargoSetter.generatePolicies(null, embargoDate, "reason", dso, owningCollection, RESTRICT_2_YEARS);
         }
 
         verify(authorizeService).createOrModifyPolicy(isNull(), any(), isNull(), same(anonymousGroup),
@@ -248,11 +273,10 @@ public class UwEmbargoSetterTest extends AbstractDSpaceTest {
         LocalDate embargoDate = LocalDate.now().plusDays(365);
         stubAuthorizedGroups(anonymousGroup, uwUsersGroup);
         ResourcePolicy anonymousPolicy = mock(ResourcePolicy.class);
-        stubCreatePolicy(anonymousGroup, embargoDate, anonymousPolicy);
+        stubCreatePolicy(anonymousGroup, embargoDate, anonymousPolicy, dso);
 
         try (MockedStatic<EPersonServiceFactory> factory = mockGroupService()) {
-            embargoSetter.parseTerms(null, null, DELAY_1_YEAR);
-            embargoSetter.generatePolicies(null, embargoDate, "reason", dso, owningCollection);
+            embargoSetter.generatePolicies(null, embargoDate, "reason", dso, owningCollection, DELAY_1_YEAR);
         }
 
         verify(authorizeService).createOrModifyPolicy(isNull(), any(), isNull(), same(anonymousGroup),
@@ -270,11 +294,10 @@ public class UwEmbargoSetterTest extends AbstractDSpaceTest {
         LocalDate embargoDate = LocalDate.now().plusDays(1800);
         stubAuthorizedGroups(uwUsersGroup);
         ResourcePolicy uwPolicy = mock(ResourcePolicy.class);
-        stubCreatePolicy(uwUsersGroup, null, uwPolicy);
+        stubCreatePolicy(uwUsersGroup, null, uwPolicy, dso);
 
         try (MockedStatic<EPersonServiceFactory> factory = mockGroupService()) {
-            embargoSetter.parseTerms(null, null, RESTRICT_5_YEARS);
-            embargoSetter.generatePolicies(null, embargoDate, "reason", dso, owningCollection);
+            embargoSetter.generatePolicies(null, embargoDate, "reason", dso, owningCollection, RESTRICT_5_YEARS);
         }
 
         verify(authorizeService, never()).createOrModifyPolicy(any(), any(), any(), same(anonymousGroup),
@@ -284,6 +307,103 @@ public class UwEmbargoSetterTest extends AbstractDSpaceTest {
                                                       isNull(), isNull(), eq(Constants.READ),
                                                       eq("reason"), same(dso));
         verify(resourcePolicyService).update(any(), same(uwPolicy));
+    }
+
+    /**
+     * The legacy 5-arg generatePolicies() has no terms available, so it must
+     * fail safe: never grant UW_Users immediate access, even when the group is
+     * authorized on the owning collection.
+     */
+    @Test
+    public void legacyGeneratePoliciesCreatesNoUwPolicy()
+        throws SQLException, AuthorizeException {
+        LocalDate embargoDate = LocalDate.now().plusDays(365);
+        stubAuthorizedGroups(anonymousGroup, uwUsersGroup);
+        ResourcePolicy anonymousPolicy = mock(ResourcePolicy.class);
+        stubCreatePolicy(anonymousGroup, embargoDate, anonymousPolicy, dso);
+
+        try (MockedStatic<EPersonServiceFactory> factory = mockGroupService()) {
+            embargoSetter.generatePolicies(null, embargoDate, "reason", dso, owningCollection);
+        }
+
+        verify(authorizeService).createOrModifyPolicy(isNull(), any(), isNull(), same(anonymousGroup),
+                                                      isNull(), eq(embargoDate), eq(Constants.READ),
+                                                      eq("reason"), same(dso));
+        verify(authorizeService, never()).createOrModifyPolicy(any(), any(), any(), same(uwUsersGroup),
+                                                               any(), any(), eq(Constants.READ),
+                                                               any(), any());
+        verify(resourcePolicyService, times(1)).update(any(), any(ResourcePolicy.class));
+    }
+
+    // ---------------------------------------------------------------
+    // setEmbargo()
+    // ---------------------------------------------------------------
+
+    @Test
+    public void setEmbargoPassesRestrictTermsThroughToPolicies()
+        throws SQLException, AuthorizeException {
+        DCDate liftDate = new DCDate(ZonedDateTime.now(ZoneOffset.UTC).plusDays(365));
+        LocalDate embargoDate = liftDate.toDate().toLocalDate();
+        mockItemWithBundles();
+        stubAuthorizedGroups(anonymousGroup, uwUsersGroup);
+        ResourcePolicy anonymousPolicy = mock(ResourcePolicy.class);
+        ResourcePolicy uwPolicy = mock(ResourcePolicy.class);
+        stubCreatePolicy(anonymousGroup, embargoDate, anonymousPolicy, originalBitstream);
+        stubCreatePolicy(uwUsersGroup, null, uwPolicy, originalBitstream);
+
+        try (MockedStatic<EPersonServiceFactory> ePerson = mockGroupService();
+             MockedStatic<EmbargoServiceFactory> embargo = mockEmbargoService(liftDate);
+             MockedStatic<ContentServiceFactory> content = mockItemService(RESTRICT_1_YEAR)) {
+            embargoSetter.setEmbargo(null, item);
+        }
+
+        verify(authorizeService).createOrModifyPolicy(isNull(), any(), isNull(), same(anonymousGroup),
+                                                      isNull(), eq(embargoDate), eq(Constants.READ),
+                                                      isNull(), same(originalBitstream));
+        verify(authorizeService).createOrModifyPolicy(isNull(), any(), isNull(), same(uwUsersGroup),
+                                                      isNull(), isNull(), eq(Constants.READ),
+                                                      isNull(), same(originalBitstream));
+        verify(resourcePolicyService).update(any(), same(anonymousPolicy));
+        verify(resourcePolicyService).update(any(), same(uwPolicy));
+    }
+
+    @Test
+    public void setEmbargoSkipsLicenseBundle()
+        throws SQLException, AuthorizeException {
+        DCDate liftDate = new DCDate(ZonedDateTime.now(ZoneOffset.UTC).plusDays(720));
+        LocalDate embargoDate = liftDate.toDate().toLocalDate();
+        mockItemWithBundles();
+        stubAuthorizedGroups(anonymousGroup);
+        ResourcePolicy anonymousPolicy = mock(ResourcePolicy.class);
+        stubCreatePolicy(anonymousGroup, embargoDate, anonymousPolicy, originalBitstream);
+
+        try (MockedStatic<EPersonServiceFactory> ePerson = mockGroupService();
+             MockedStatic<EmbargoServiceFactory> embargo = mockEmbargoService(liftDate);
+             MockedStatic<ContentServiceFactory> content = mockItemService(DELAY_2_YEARS)) {
+            embargoSetter.setEmbargo(null, item);
+        }
+
+        // The LICENSE bundle must be skipped entirely: its bitstreams are never
+        // even enumerated, and the only policy created targets the ORIGINAL
+        // bundle's bitstream.
+        verify(licenseBundle, never()).getBitstreams();
+        verify(authorizeService, times(1)).createOrModifyPolicy(any(), any(), any(), any(),
+                                                                any(), any(), eq(Constants.READ),
+                                                                any(), same(originalBitstream));
+    }
+
+    @Test
+    public void setEmbargoDoesNothingWhenLiftDateIsNull()
+        throws SQLException, AuthorizeException {
+        mockItemWithBundles();
+
+        try (MockedStatic<EmbargoServiceFactory> embargo = mockEmbargoService(null);
+             MockedStatic<ContentServiceFactory> content = mockItemService(RESTRICT_1_YEAR)) {
+            embargoSetter.setEmbargo(null, item);
+        }
+
+        verifyNoInteractions(authorizeService);
+        verifyNoInteractions(resourcePolicyService);
     }
 
     // ---------------------------------------------------------------
@@ -297,12 +417,29 @@ public class UwEmbargoSetterTest extends AbstractDSpaceTest {
             .thenReturn(authorized);
     }
 
-    private void stubCreatePolicy(Group group, LocalDate embargoDate, ResourcePolicy policy)
+    private void stubCreatePolicy(Group group, LocalDate embargoDate, ResourcePolicy policy,
+                                  DSpaceObject target)
         throws SQLException, AuthorizeException {
         when(authorizeService.createOrModifyPolicy(isNull(), any(), isNull(), same(group), isNull(),
                                                    embargoDate == null ? isNull() : eq(embargoDate),
-                                                   eq(Constants.READ), any(), same(dso)))
+                                                   eq(Constants.READ), any(), same(target)))
             .thenReturn(policy);
+    }
+
+    /**
+     * Mock an item with a LICENSE bundle and an ORIGINAL bundle holding one
+     * bitstream, owned by the mocked owningCollection.
+     */
+    private void mockItemWithBundles() throws SQLException {
+        item = mock(Item.class);
+        when(item.getOwningCollection()).thenReturn(owningCollection);
+        licenseBundle = mock(Bundle.class);
+        when(licenseBundle.getName()).thenReturn(Constants.LICENSE_BUNDLE_NAME);
+        originalBundle = mock(Bundle.class);
+        when(originalBundle.getName()).thenReturn(Constants.DEFAULT_BUNDLE_NAME);
+        originalBitstream = mock(Bitstream.class);
+        when(originalBundle.getBitstreams()).thenReturn(List.of(originalBitstream));
+        when(item.getBundles()).thenReturn(Arrays.asList(licenseBundle, originalBundle));
     }
 
     /**
@@ -315,6 +452,38 @@ public class UwEmbargoSetterTest extends AbstractDSpaceTest {
         when(ePersonServiceFactory.getGroupService()).thenReturn(groupService);
         MockedStatic<EPersonServiceFactory> factory = mockStatic(EPersonServiceFactory.class);
         factory.when(EPersonServiceFactory::getInstance).thenReturn(ePersonServiceFactory);
+        return factory;
+    }
+
+    /**
+     * Statically mock EmbargoServiceFactory so setEmbargo()'s lift-date lookup
+     * returns the given date. Callers must close the returned MockedStatic.
+     */
+    private MockedStatic<EmbargoServiceFactory> mockEmbargoService(DCDate liftDate)
+        throws SQLException, AuthorizeException {
+        EmbargoService embargoService = mock(EmbargoService.class);
+        when(embargoService.getEmbargoTermsAsDate(any(), same(item))).thenReturn(liftDate);
+        EmbargoServiceFactory embargoServiceFactory = mock(EmbargoServiceFactory.class);
+        when(embargoServiceFactory.getEmbargoService()).thenReturn(embargoService);
+        MockedStatic<EmbargoServiceFactory> factory = mockStatic(EmbargoServiceFactory.class);
+        factory.when(EmbargoServiceFactory::getInstance).thenReturn(embargoServiceFactory);
+        return factory;
+    }
+
+    /**
+     * Statically mock ContentServiceFactory so setEmbargo()'s terms lookup on
+     * the item's metadata (field TERMS_FIELD) returns the given terms.
+     * Callers must close the returned MockedStatic.
+     */
+    private MockedStatic<ContentServiceFactory> mockItemService(String terms) {
+        ItemService itemService = mock(ItemService.class);
+        when(itemService.getMetadataFirstValue(same(item), eq("dc"), eq("description"),
+                                               eq("embargo"), eq(Item.ANY)))
+            .thenReturn(terms);
+        ContentServiceFactory contentServiceFactory = mock(ContentServiceFactory.class);
+        when(contentServiceFactory.getItemService()).thenReturn(itemService);
+        MockedStatic<ContentServiceFactory> factory = mockStatic(ContentServiceFactory.class);
+        factory.when(ContentServiceFactory::getInstance).thenReturn(contentServiceFactory);
         return factory;
     }
 }
