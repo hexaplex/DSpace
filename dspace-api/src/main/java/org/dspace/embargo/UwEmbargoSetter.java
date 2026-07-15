@@ -174,7 +174,7 @@ public class UwEmbargoSetter extends DayTableEmbargoSetter {
         List<Group> authorizedGroups = getAuthorizeService()
             .getAuthorizedGroups(context, owningCollection, Constants.DEFAULT_ITEM_READ);
 
-        // Check if Anonymous group is authorized
+        // Check if Anonymous group is authorized (it should be, normally)
         boolean anonGroupIsAuthorized = false;
         for (Group g : authorizedGroups) {
             if (StringUtils.equals(g.getName(), Group.ANONYMOUS)) {
@@ -211,7 +211,7 @@ public class UwEmbargoSetter extends DayTableEmbargoSetter {
                 }
             }
 
-            // If the UW_Users group is authorized, add an non-embargoed READ policy for it
+            // If the UW_Users group is authorized, add an non-embargoed READ policy for it (it should be authorized, normally)
             if (uwUsersGroupIsAuthorized) {
                 ResourcePolicy rp = getAuthorizeService()
                     .createOrModifyPolicy(null, context, null, uwUsers,

@@ -170,6 +170,11 @@ public class UwEmbargoSetterTest extends AbstractDSpaceTest {
     // parseTerms()
     // ---------------------------------------------------------------
 
+    /**
+     * Terms matching the configured 'embargo.terms.open' value mean a
+     * permanent embargo: the lift date is the special FOREVER date rather
+     * than a computed one.
+     */
     @Test
     public void parseTermsReturnsForeverForOpenTerms() throws SQLException, AuthorizeException {
         DCDate result = embargoSetter.parseTerms(null, null, "forever");
@@ -177,6 +182,13 @@ public class UwEmbargoSetterTest extends AbstractDSpaceTest {
                      EmbargoServiceImpl.FOREVER.toString(), result.toString());
     }
 
+    /**
+     * Each of the five standard UW embargo choices maps through the
+     * 'embargo.terms.days' table to a lift date the configured number of days
+     * from now. Both "Restrict to UW" and "Delay release" variants use the
+     * same table; they differ in who may read during the embargo (see the
+     * generatePolicies() tests), not in the lift date.
+     */
     @Test
     public void parseTermsComputesLiftDateForEachConfiguredTerm() throws SQLException, AuthorizeException {
         String[][] termsAndDays = {
@@ -198,12 +210,19 @@ public class UwEmbargoSetterTest extends AbstractDSpaceTest {
         }
     }
 
+    /**
+     * Terms text absent from the day table produces no lift date: the setter
+     * must not guess at a date for wording it does not recognize.
+     */
     @Test
     public void parseTermsReturnsNullForUnknownTerms() throws SQLException, AuthorizeException {
         assertNull("Terms not in the day table should return null",
                    embargoSetter.parseTerms(null, null, "3 fortnights"));
     }
 
+    /**
+     * An item with no embargo terms metadata is simply not embargoed.
+     */
     @Test
     public void parseTermsReturnsNullForNullTerms() throws SQLException, AuthorizeException {
         assertNull("Null terms should return null",
@@ -214,6 +233,10 @@ public class UwEmbargoSetterTest extends AbstractDSpaceTest {
     // generatePolicies()
     // ---------------------------------------------------------------
 
+    /**
+     * Without an embargo date there is nothing to enforce: no policies may be
+     * created or modified.
+     */
     @Test
     public void generatePoliciesDoesNothingForNullEmbargoDate() throws SQLException, AuthorizeException {
         embargoSetter.generatePolicies(null, null, "reason", dso, owningCollection, RESTRICT_1_YEAR);
@@ -222,6 +245,11 @@ public class UwEmbargoSetterTest extends AbstractDSpaceTest {
         verifyNoInteractions(resourcePolicyService);
     }
 
+    /**
+     * The core "Restrict to UW" behavior: Anonymous gets a READ policy that
+     * only starts on the lift date (the public is blocked until then), while
+     * UW_Users gets a READ policy with no start date (immediate access).
+     */
     @Test
     public void restrictToUwCreatesEmbargoedAnonymousAndOpenUwPolicies()
         throws SQLException, AuthorizeException {
@@ -246,6 +274,12 @@ public class UwEmbargoSetterTest extends AbstractDSpaceTest {
         verify(resourcePolicyService).update(any(), same(uwPolicy));
     }
 
+    /**
+     * "Restrict to UW" terms only grant UW_Users immediate access when that
+     * group is already authorized for DEFAULT_ITEM_READ on the owning
+     * collection; the embargo wording alone must not widen access. The
+     * embargoed Anonymous policy is still created.
+     */
     @Test
     public void restrictToUwSkipsUwPolicyWhenUwUsersNotAuthorized()
         throws SQLException, AuthorizeException {
@@ -267,6 +301,11 @@ public class UwEmbargoSetterTest extends AbstractDSpaceTest {
         verify(resourcePolicyService).update(any(), same(anonymousPolicy));
     }
 
+    /**
+     * "Delay release" is the key contrast with "Restrict to UW": nobody gets
+     * early access, not even UW_Users, even when that group is authorized on
+     * the owning collection. Only the embargoed Anonymous policy is created.
+     */
     @Test
     public void delayReleaseCreatesOnlyEmbargoedAnonymousPolicy()
         throws SQLException, AuthorizeException {
@@ -288,6 +327,11 @@ public class UwEmbargoSetterTest extends AbstractDSpaceTest {
         verify(resourcePolicyService, times(1)).update(any(), any(ResourcePolicy.class));
     }
 
+    /**
+     * When the owning collection does not authorize Anonymous at all, a
+     * "Restrict to UW" embargo still grants UW_Users immediate access; no
+     * Anonymous policy is created.
+     */
     @Test
     public void restrictToUwWithoutAnonymousStillCreatesUwPolicy()
         throws SQLException, AuthorizeException {
@@ -339,6 +383,12 @@ public class UwEmbargoSetterTest extends AbstractDSpaceTest {
     // setEmbargo()
     // ---------------------------------------------------------------
 
+    /**
+     * End-to-end over the mocked item: the "Restrict to UW" terms stored in
+     * the item's metadata flow through setEmbargo() to the ORIGINAL
+     * bitstream's policies — an embargoed Anonymous policy plus an immediate
+     * UW_Users policy.
+     */
     @Test
     public void setEmbargoPassesRestrictTermsThroughToPolicies()
         throws SQLException, AuthorizeException {
@@ -367,6 +417,10 @@ public class UwEmbargoSetterTest extends AbstractDSpaceTest {
         verify(resourcePolicyService).update(any(), same(uwPolicy));
     }
 
+    /**
+     * Embargoes apply to content bitstreams only: the LICENSE bundle's
+     * policies must be left untouched.
+     */
     @Test
     public void setEmbargoSkipsLicenseBundle()
         throws SQLException, AuthorizeException {
@@ -392,6 +446,11 @@ public class UwEmbargoSetterTest extends AbstractDSpaceTest {
                                                                 any(), same(originalBitstream));
     }
 
+    /**
+     * When the embargo service reports no lift date for the item,
+     * setEmbargo() must not touch any policies, even though terms metadata is
+     * present.
+     */
     @Test
     public void setEmbargoDoesNothingWhenLiftDateIsNull()
         throws SQLException, AuthorizeException {
