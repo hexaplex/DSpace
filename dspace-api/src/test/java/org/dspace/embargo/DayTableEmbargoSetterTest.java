@@ -16,7 +16,7 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.time.ZonedDateTime;
 
-import org.dspace.AbstractDSpaceTest;
+import org.dspace.AbstractUnitTest;
 import org.dspace.authorize.AuthorizeException;
 import org.dspace.content.DCDate;
 import org.dspace.services.ConfigurationService;
@@ -31,7 +31,7 @@ import org.junit.Test;
  * not on the Context or Item, so these tests run against the test kernel
  * without a database.
  */
-public class DayTableEmbargoSetterTest extends AbstractDSpaceTest {
+public class DayTableEmbargoSetterTest extends AbstractUnitTest {
 
     private static final String TERMS_OPEN_PROPERTY = "embargo.terms.open";
     private static final String TERMS_DAYS_PROPERTY = "embargo.terms.days";
@@ -66,6 +66,11 @@ public class DayTableEmbargoSetterTest extends AbstractDSpaceTest {
         configurationService.setProperty(TERMS_DAYS_PROPERTY, previousTermsDays);
     }
 
+    /**
+     * Terms matching the configured 'embargo.terms.open' value mean a
+     * permanent embargo: the lift date is the constant FOREVER date rather
+     * than a computed one.
+     */
     @Test
     public void parseTermsReturnsForeverForOpenTerms() throws SQLException, AuthorizeException {
         DCDate result = embargoSetter.parseTerms(null, null, "forever");
@@ -73,6 +78,10 @@ public class DayTableEmbargoSetterTest extends AbstractDSpaceTest {
                      EmbargoServiceImpl.FOREVER.toString(), result.toString());
     }
 
+    /**
+     * Terms found in the 'embargo.terms.days' table produce a lift date the
+     * configured number of days from now.
+     */
     @Test
     public void parseTermsComputesLiftDateFromDayTable() throws SQLException, AuthorizeException {
         DCDate result = embargoSetter.parseTerms(null, null, "90 days");
@@ -85,6 +94,11 @@ public class DayTableEmbargoSetterTest extends AbstractDSpaceTest {
                    difference.compareTo(TOLERANCE) <= 0);
     }
 
+    /**
+     * Every entry in the day table maps to its own day count: each configured
+     * terms string yields a lift date that many days from now, independent of
+     * the other entries.
+     */
     @Test
     public void parseTermsComputesLiftDateForEachConfiguredEntry() throws SQLException, AuthorizeException {
         String[][] termsAndDays = {{"6 months", "180"}, {"1 year", "365"}};
@@ -100,18 +114,28 @@ public class DayTableEmbargoSetterTest extends AbstractDSpaceTest {
         }
     }
 
+    /**
+     * Terms text absent from the day table produces no lift date.
+     */
     @Test
     public void parseTermsReturnsNullForUnknownTerms() throws SQLException, AuthorizeException {
         assertNull("Terms not in the day table should return null",
                    embargoSetter.parseTerms(null, null, "3 fortnights"));
     }
 
+    /**
+     * An item with no embargo terms metadata is not embargoed.
+     */
     @Test
     public void parseTermsReturnsNullForNullTerms() throws SQLException, AuthorizeException {
         assertNull("Null terms should return null",
                    embargoSetter.parseTerms(null, null, null));
     }
 
+    /**
+     * Whitespace around the terms or the day count in a configured
+     * 'terms:days' entry is ignored.
+     */
     @Test
     public void parseTermsTrimsWhitespaceInDayTableEntries() throws SQLException, AuthorizeException {
         configurationService.setProperty(TERMS_DAYS_PROPERTY, new String[] {" 2 years : 730 "});

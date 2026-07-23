@@ -211,7 +211,8 @@ public class UwEmbargoSetter extends DayTableEmbargoSetter {
                 }
             }
 
-            // If the UW_Users group is authorized, add an non-embargoed READ policy for it (it should be authorized, normally)
+            // If the UW_Users group is authorized, add a non-embargoed READ policy for it
+            // (it should be authorized, normally)
             if (uwUsersGroupIsAuthorized) {
                 ResourcePolicy rp = getAuthorizeService()
                     .createOrModifyPolicy(null, context, null, uwUsers,
