@@ -38,7 +38,7 @@ public class DayTableEmbargoSetterTest extends AbstractUnitTest {
 
     /**
      * Tolerance when comparing computed lift dates against "now + N days",
-     * to absorb the wall-clock time that passes while the test runs.
+     * to absorb the time that passes while the test runs.
      */
     private static final Duration TOLERANCE = Duration.ofMinutes(5);
 
